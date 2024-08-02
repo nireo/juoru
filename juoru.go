@@ -16,19 +16,21 @@ type Event struct {
 }
 
 type Node struct {
-	ID    string
-	Addr  string
-	Data  map[string]string
-	Peers map[string]string
-	mutex sync.RWMutex
+	ID       string
+	Addr     string
+	Data     map[string]string
+	Peers    map[string]string
+	mutex    sync.RWMutex
+	MaxPeers int
 }
 
-func NewNode(id, addr string) *Node {
+func NewNode(id, addr string, maxPeers int) *Node {
 	return &Node{
-		ID:    id,
-		Addr:  addr,
-		Data:  make(map[string]string),
-		Peers: make(map[string]string),
+		ID:       id,
+		Addr:     addr,
+		Data:     make(map[string]string),
+		Peers:    make(map[string]string),
+		MaxPeers: maxPeers,
 	}
 }
 
@@ -78,9 +80,21 @@ func (n *Node) handleJoin(data map[string]string) {
 
 	for id, addr := range data {
 		if id != n.ID && addr != n.Addr {
-			n.Peers[id] = addr
+			n.AddPeer(id, addr)
 		}
 	}
+}
+
+func (n *Node) AddPeer(id, addr string) {
+	if len(n.Peers) >= n.MaxPeers {
+		// for looping the peers is pretty much random (not actually)
+		for k := range n.Peers {
+			delete(n.Peers, k)
+			break
+		}
+	}
+
+	n.Peers[id] = addr
 }
 
 func (n *Node) getRandomPeer() string {

@@ -7,7 +7,7 @@ import (
 )
 
 func TestAddData(t *testing.T) {
-	node := NewNode("test", "localhost:8000")
+	node := NewNode("test", "localhost:8000", 20)
 	node.AddData("key", "value")
 	if node.Data["key"] != "value" {
 		t.Errorf("failed to add data")
@@ -15,7 +15,7 @@ func TestAddData(t *testing.T) {
 }
 
 func TestHandleGossip(t *testing.T) {
-	node := NewNode("test", "localhost:8000")
+	node := NewNode("test", "localhost:8000", 20)
 	data := map[string]string{"key1": "value1", "key2": "value2"}
 
 	node.handleGossipEvent(data)
@@ -25,7 +25,7 @@ func TestHandleGossip(t *testing.T) {
 }
 
 func TestHandleJoin(t *testing.T) {
-	node := NewNode("test", "localhost:8080")
+	node := NewNode("test", "localhost:8080", 20)
 	data := map[string]string{"peer1": "localhost:8001", "peer2": "localhost:8002"}
 	node.handleJoin(data)
 	if len(node.Peers) != 2 || node.Peers["peer1"] != "localhost:8001" || node.Peers["peer2"] != "localhost:8002" {
@@ -34,7 +34,7 @@ func TestHandleJoin(t *testing.T) {
 }
 
 func TestGetRandomPeer(t *testing.T) {
-	node := NewNode("test", "localhost:8000")
+	node := NewNode("test", "localhost:8000", 20)
 	node.Peers = map[string]string{"peer1": "localhost:8001", "peer2": "localhost:8002"}
 	peer := node.getRandomPeer()
 	if peer != "localhost:8001" && peer != "localhost:8002" {
@@ -43,7 +43,7 @@ func TestGetRandomPeer(t *testing.T) {
 }
 
 func TestNodeStart(t *testing.T) {
-	node := NewNode("test", "localhost:8000")
+	node := NewNode("test", "localhost:8000", 20)
 	err := node.Start()
 	if err != nil {
 		t.Errorf("Node.Start() failed: %v", err)
@@ -57,8 +57,8 @@ func TestNodeStart(t *testing.T) {
 }
 
 func TestNodeJoin(t *testing.T) {
-	node1 := NewNode("node1", "localhost:8001")
-	node2 := NewNode("node2", "localhost:8002")
+	node1 := NewNode("node1", "localhost:8001", 20)
+	node2 := NewNode("node2", "localhost:8002", 20)
 
 	err := node1.Start()
 	if err != nil {
@@ -77,8 +77,8 @@ func TestNodeJoin(t *testing.T) {
 }
 
 func TestGossipPropagation(t *testing.T) {
-	node1 := NewNode("node1", "localhost:8001")
-	node2 := NewNode("node2", "localhost:8002")
+	node1 := NewNode("node1", "localhost:8001", 20)
+	node2 := NewNode("node2", "localhost:8002", 20)
 
 	err := node1.Start()
 	if err != nil {
