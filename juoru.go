@@ -2,6 +2,7 @@ package juoru
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net"
 	"sync"
@@ -10,40 +11,75 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type DataEntry struct {
+	Timestamp int64  `json:"timestamp"`
+	Value     string `json:"value"`
+}
+
 type Event struct {
-	Type string            `json:"type"`
-	Data map[string]string `json:"data"`
+	Type string               `json:"type"`
+	Data map[string]DataEntry `json:"data"`
 }
 
 type Node struct {
-	ID       string
-	Addr     string
-	Data     map[string]string
-	Peers    map[string]string
-	mutex    sync.RWMutex
-	MaxPeers int
+	ID        string
+	Addr      string
+	Data      map[string]DataEntry
+	Peers     map[string]string
+	mutex     sync.RWMutex
+	MaxPeers  int
+	listener  net.Listener
+	closeChan chan struct{}
+	wg        sync.WaitGroup
 }
 
 func NewNode(id, addr string, maxPeers int) *Node {
 	return &Node{
-		ID:       id,
-		Addr:     addr,
-		Data:     make(map[string]string),
-		Peers:    make(map[string]string),
-		MaxPeers: maxPeers,
+		ID:        id,
+		Addr:      addr,
+		Data:      make(map[string]DataEntry),
+		Peers:     make(map[string]string),
+		MaxPeers:  maxPeers,
+		closeChan: make(chan struct{}),
 	}
 }
 
-func (n *Node) listen(ln net.Listener) {
+func (n *Node) listen() {
+	defer n.wg.Done()
 	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Err(err)
-			continue
-		}
+		select {
+		case <-n.closeChan:
+			return
+		default:
+			conn, err := n.listener.Accept()
+			if err != nil {
+				select {
+				case <-n.closeChan:
+					return
+				default:
+					log.Err(err).Msg("could not accept connection")
+					continue
+				}
+			}
 
-		go n.handleNodeConnection(conn)
+			go n.handleNodeConnection(conn)
+		}
 	}
+}
+
+func (n *Node) Close() error {
+	close(n.closeChan)
+
+	if n.listener != nil {
+		err := n.listener.Close()
+		if err != nil {
+			return fmt.Errorf("error closing listener: %v", err)
+		}
+	}
+
+	// wait for everything to close
+	n.wg.Wait()
+	return nil
 }
 
 func (n *Node) handleNodeConnection(conn net.Conn) {
@@ -63,24 +99,24 @@ func (n *Node) handleNodeConnection(conn net.Conn) {
 	}
 }
 
-func (n *Node) handleGossipEvent(data map[string]string) {
+func (n *Node) handleGossipEvent(data map[string]DataEntry) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
 	for k, v := range data {
-		if _, exists := n.Data[k]; !exists {
+		if existing, ok := n.Data[k]; !ok || existing.Timestamp < v.Timestamp {
 			n.Data[k] = v
 		}
 	}
 }
 
-func (n *Node) handleJoin(data map[string]string) {
+func (n *Node) handleJoin(data map[string]DataEntry) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
-	for id, addr := range data {
-		if id != n.ID && addr != n.Addr {
-			n.AddPeer(id, addr)
+	for id, d := range data {
+		if id != n.ID && d.Value != n.Addr {
+			n.AddPeer(id, d.Value)
 		}
 	}
 }
@@ -111,7 +147,8 @@ func (n *Node) getRandomPeer() string {
 func (n *Node) AddData(key, value string) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
-	n.Data[key] = value
+	currentTime := time.Now().UnixNano()
+	n.Data[key] = DataEntry{Value: value, Timestamp: currentTime}
 }
 
 func (n *Node) sendGossip(peerAddr string) {
@@ -124,7 +161,7 @@ func (n *Node) sendGossip(peerAddr string) {
 
 	conn, err := net.Dial("tcp", peerAddr)
 	if err != nil {
-		log.Err(err)
+		log.Err(err).Msg("failed to contact node for gossip")
 		return
 	}
 	defer conn.Close()
@@ -136,23 +173,34 @@ func (n *Node) sendGossip(peerAddr string) {
 }
 
 func (n *Node) gossip() {
+	defer n.wg.Done()
+
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(750 * time.Millisecond)
-		if len(n.Peers) > 0 {
-			peer := n.getRandomPeer()
-			n.sendGossip(peer)
+		select {
+		case <-n.closeChan:
+			return
+		case <-ticker.C:
+			if len(n.Peers) > 0 {
+				peer := n.getRandomPeer()
+				n.sendGossip(peer)
+			}
 		}
 	}
 }
 
 func (n *Node) Start() error {
-	ln, err := net.Listen("tcp", n.Addr)
+	var err error
+	n.listener, err = net.Listen("tcp", n.Addr)
 	if err != nil {
 		log.Err(err)
 		return err
 	}
 
-	go n.listen(ln)
+	n.wg.Add(2)
+	go n.listen()
 	go n.gossip()
 
 	return nil
@@ -161,15 +209,52 @@ func (n *Node) Start() error {
 func (n *Node) Join(bootstrapAddr string) error {
 	conn, err := net.Dial("tcp", bootstrapAddr)
 	if err != nil {
-		log.Err(err)
+		log.Err(err).Msg("error dialing bootstrap")
 		return err
 	}
 	defer conn.Close()
 
 	event := Event{
 		Type: "join",
-		Data: map[string]string{n.ID: n.Addr},
+		Data: map[string]DataEntry{n.ID: {Value: n.Addr, Timestamp: time.Now().Unix()}},
 	}
 
 	return json.NewEncoder(conn).Encode(event)
 }
+
+// func (n *Node) startAntiEntropy() {
+// 	ticker := time.NewTicker(1 * time.Minute)
+// 	go func() {
+// 		for range ticker.C {
+// 			n.doAntiEntropy()
+// 		}
+// 	}()
+// }
+
+// func (n *Node) doAntiEntropy() {
+// 	peer := n.getRandomPeer()
+// 	if peer == "" {
+// 		log.Warn().Msg("could not get random peer for anti entropy")
+// 		return
+// 	}
+
+// 	n.mutex.RLock()
+// 	data := n.Data
+// 	n.mutex.RUnlock()
+
+// 	remote, err := n.fetchDataFromPeer(peer)
+// 	if err != nil {
+// 		log.Err(err).Msg("could not fetch data in anti entropy")
+// 		return
+// 	}
+
+// 	n.mutex.Lock()
+// 	defer n.mutex.Unlock()
+// 	for k, v := range remote {
+
+// 	}
+// }
+
+// func (n *Node) fetchDataFromPeer(peerAddr string) (map[string]string, error) {
+// 	return nil, nil
+// }

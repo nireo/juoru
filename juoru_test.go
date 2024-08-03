@@ -9,24 +9,25 @@ import (
 func TestAddData(t *testing.T) {
 	node := NewNode("test", "localhost:8000", 20)
 	node.AddData("key", "value")
-	if node.Data["key"] != "value" {
+	if node.Data["key"].Value != "value" {
 		t.Errorf("failed to add data")
 	}
 }
 
 func TestHandleGossip(t *testing.T) {
 	node := NewNode("test", "localhost:8000", 20)
-	data := map[string]string{"key1": "value1", "key2": "value2"}
+	data := map[string]DataEntry{"key1": DataEntry{Value: "value1", Timestamp: 0}, "key2": DataEntry{Value: "value2", Timestamp: 0}}
 
 	node.handleGossipEvent(data)
-	if len(node.Data) != 2 || node.Data["key1"] != "value1" || node.Data["key2"] != "value2" {
+	if len(node.Data) != 2 || node.Data["key1"].Value != "value1" || node.Data["key2"].Value != "value2" {
 		t.Errorf("failed setting node data")
 	}
 }
 
 func TestHandleJoin(t *testing.T) {
 	node := NewNode("test", "localhost:8080", 20)
-	data := map[string]string{"peer1": "localhost:8001", "peer2": "localhost:8002"}
+	data := map[string]DataEntry{
+		"peer1": DataEntry{Value: "localhost:8001", Timestamp: 0}, "peer2": DataEntry{Value: "localhost:8002", Timestamp: 0}}
 	node.handleJoin(data)
 	if len(node.Peers) != 2 || node.Peers["peer1"] != "localhost:8001" || node.Peers["peer2"] != "localhost:8002" {
 		t.Error("failed to update node peers")
@@ -99,7 +100,7 @@ func TestGossipPropagation(t *testing.T) {
 	node1.AddData("key1", "value1")
 
 	time.Sleep(2 * time.Second)
-	if node2.Data["key1"] != "value1" {
+	if node2.Data["key1"].Value != "value1" {
 		t.Errorf("Gossip failed to propagate data from node1 to node2")
 	}
 }
