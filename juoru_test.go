@@ -81,6 +81,9 @@ func TestGossipPropagation(t *testing.T) {
 	node1 := NewNode("node1", "localhost:8001", 20)
 	node2 := NewNode("node2", "localhost:8002", 20)
 
+	defer node1.Close()
+	defer node2.Close()
+
 	err := node1.Start()
 	if err != nil {
 		t.Fatalf("Failed to start node1: %v", err)

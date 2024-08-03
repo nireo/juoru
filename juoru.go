@@ -85,11 +85,22 @@ func (n *Node) Close() error {
 func (n *Node) handleNodeConnection(conn net.Conn) {
 	defer conn.Close()
 
+	connDone := make(chan struct{})
+	go func() {
+		select {
+		case <-n.closeChan:
+			conn.Close()
+		case <-connDone:
+		}
+	}()
+
 	var event Event
 	if err := json.NewDecoder(conn).Decode(&event); err != nil {
 		log.Err(err)
 		return
 	}
+
+	close(connDone)
 
 	switch event.Type {
 	case "gossip":
