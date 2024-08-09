@@ -11,36 +11,94 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type EventType string
+
+var (
+	EventTypeGossip    EventType = "gossip"
+	EventTypeJoin      EventType = "join"
+	EventTypeLeave     EventType = "leave"
+	EventTypeHeartbeat EventType = "hearbeat"
+)
+
 type DataEntry struct {
 	Timestamp int64  `json:"timestamp"`
 	Value     string `json:"value"`
 }
 
 type Event struct {
-	Type string               `json:"type"`
-	Data map[string]DataEntry `json:"data"`
+	Type     EventType            `json:"type"`
+	Data     map[string]DataEntry `json:"data"`
+	SenderID string
 }
 
 type Node struct {
-	ID        string
-	Addr      string
-	Data      map[string]DataEntry
-	Peers     map[string]string
-	mutex     sync.RWMutex
-	MaxPeers  int
-	listener  net.Listener
-	closeChan chan struct{}
-	wg        sync.WaitGroup
+	ID                string
+	Addr              string
+	Data              map[string]DataEntry
+	Peers             map[string]string
+	mutex             sync.RWMutex
+	MaxPeers          int
+	listener          net.Listener
+	closeChan         chan struct{}
+	wg                sync.WaitGroup
+	lastHeartbeat     map[string]time.Time
+	heartbeatInterval time.Duration
 }
 
 func NewNode(id, addr string, maxPeers int) *Node {
 	return &Node{
-		ID:        id,
-		Addr:      addr,
-		Data:      make(map[string]DataEntry),
-		Peers:     make(map[string]string),
-		MaxPeers:  maxPeers,
-		closeChan: make(chan struct{}),
+		ID:                id,
+		Addr:              addr,
+		Data:              make(map[string]DataEntry),
+		Peers:             make(map[string]string),
+		MaxPeers:          maxPeers,
+		closeChan:         make(chan struct{}),
+		heartbeatInterval: 7 * time.Second,
+		lastHeartbeat:     make(map[string]time.Time),
+	}
+}
+
+func (n *Node) startHeartbeat() {
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		ticker := time.NewTicker(n.heartbeatInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-n.closeChan:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+func (n *Node) sendHeartbeats() {
+	n.mutex.RLock()
+	peers := make(map[string]string, len(n.Peers))
+	for id, addr := range n.Peers {
+		peers[id] = addr
+	}
+	n.mutex.RUnlock()
+
+	for _, peerAddr := range peers {
+		go n.sendHeartbeat(peerAddr)
+	}
+}
+
+func (n *Node) checkHeartbeatFailures() {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	now := time.Now()
+	for id, last := range n.lastHeartbeat {
+		if now.Sub(last) > 3*n.heartbeatInterval {
+			log.Info().Msg("heartbeat has failed three times in a row")
+			delete(n.Peers, id)
+			delete(n.lastHeartbeat, id)
+		}
 	}
 }
 
@@ -103,10 +161,12 @@ func (n *Node) handleNodeConnection(conn net.Conn) {
 	close(connDone)
 
 	switch event.Type {
-	case "gossip":
+	case EventTypeGossip:
 		n.handleGossipEvent(event.Data)
-	case "join":
+	case EventTypeJoin:
 		n.handleJoin(event.Data)
+	case EventTypeHeartbeat:
+		n.handleHeartbeat(event.SenderID)
 	}
 }
 
@@ -162,10 +222,37 @@ func (n *Node) AddData(key, value string) {
 	n.Data[key] = DataEntry{Value: value, Timestamp: currentTime}
 }
 
+func (n *Node) handleHeartbeat(senderID string) {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	n.lastHeartbeat[senderID] = time.Now()
+}
+
+func (n *Node) sendHeartbeat(peerAddr string) {
+	conn, err := net.Dial("tcp", peerAddr)
+	if err != nil {
+		log.Err(err).Str("address", peerAddr).Msg("could not connect to peer for heartbeat")
+		return
+	}
+	defer conn.Close()
+
+	heartbeatEvent := Event{
+		Type:     EventTypeHeartbeat,
+		Data:     make(map[string]DataEntry),
+		SenderID: n.ID,
+	}
+
+	err = json.NewEncoder(conn).Encode(heartbeatEvent)
+	if err != nil {
+		log.Err(err).Msg("could not encode heartbeat message")
+	}
+}
+
 func (n *Node) sendGossip(peerAddr string) {
 	n.mutex.RLock()
 	event := Event{
-		Type: "gossip",
+		Type: EventTypeHeartbeat,
 		Data: n.Data,
 	}
 	n.mutex.RUnlock()
@@ -210,9 +297,10 @@ func (n *Node) Start() error {
 		return err
 	}
 
-	n.wg.Add(2)
+	n.wg.Add(3)
 	go n.listen()
 	go n.gossip()
+	go n.startHeartbeat()
 
 	return nil
 }
@@ -226,7 +314,7 @@ func (n *Node) Join(bootstrapAddr string) error {
 	defer conn.Close()
 
 	event := Event{
-		Type: "join",
+		Type: EventTypeJoin,
 		Data: map[string]DataEntry{n.ID: {Value: n.Addr, Timestamp: time.Now().Unix()}},
 	}
 
